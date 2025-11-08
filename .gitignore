@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+*.env
+
+# Databases
+*.db
+*.sqlite3
+db_storage/
+
+# Data & Models
+data/raw/
+data/processed/
+models/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
