@@ -1,0 +1,23 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Data & Databases (we will use volumes)
+data/
+db_storage/
+
+# Secrets
+.env
+
+# OS & IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# Tests
+tests/

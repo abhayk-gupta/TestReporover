@@ -1,0 +1,53 @@
+services:
+  # Service 1: The FastAPI Backend
+  - type: web
+    name: legalbuddy-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+    envVars:
+      - fromGroup: legalbuddy-secrets  # We will create this group
+    ports:
+      - 8000
+    disks:
+      - name: vector-db
+        mountPath: /app/db_storage
+      - name: chat-db
+        mountPath: /app/data/processed
+
+  # Service 2: The Streamlit Frontend
+  - type: web
+    name: legalbuddy-frontend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: streamlit run app/streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    envVars:
+      - key: API_URL
+        # This is the magic part: Render automatically gives your
+        # frontend the URL of your backend service.
+        value: ${legalbuddy-backend.url}/chat
+    ports:
+      - 8501
+
+# --- This part is for your API Keys ---
+envVarGroups:
+  - name: legalbuddy-secrets
+    envVars:
+      - key: GROQ_API_KEY
+        value: "gsk_...your_key_here" # You will paste this in the Render UI
+      - key: TAVILY_API_KEY
+        value: "tvly-...your_key_here" # You will paste this in the Render UI
+
+# Job: The One-Time Database Builder
+  - type: job
+    name: vector-store-builder
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerCommand: python -m src.vector_store
+    envVars:
+      - fromGroup: legalbuddy-secrets
+    disks:
+      - name: vector-db
+        mountPath: /app/db_storage
+      - name: chat-db
+        mountPath: /app/data/processed

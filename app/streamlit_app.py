@@ -4,7 +4,8 @@ import uuid
 import time
 
 # --- API Endpoint ---
-API_URL = "http://127.0.0.1:8000/chat"
+# API_URL = "http://127.0.0.1:8000/chat"
+API_URL = "http://backend:8000/chat"
 
 # --- Page Configuration (Makes it look professional) ---
 st.set_page_config(

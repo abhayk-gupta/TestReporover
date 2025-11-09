@@ -1,0 +1,23 @@
+version: '1.0'
+
+services:
+  # Service 1: Our FastAPI Backend
+  backend:
+    build: .  # Use the Dockerfile in this directory
+    command: python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+    volumes:
+      - ./data:/app/data
+      - ./db_storage:/app/db_storage
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./.env
+
+  # Service 2: Our Streamlit Frontend
+  frontend:
+    build: .  # Reuse the *same* Docker image
+    command: streamlit run app/streamlit_app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    depends_on:
+      - backend  # Tells Docker to start the backend first

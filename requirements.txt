@@ -3,8 +3,6 @@ langchain-core
 langchain
 chromadb
 sentence-transformers
-torch
-transformers
 fastapi
 uvicorn
 pyngrok
