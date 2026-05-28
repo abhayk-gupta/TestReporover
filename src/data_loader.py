@@ -1,4 +1,5 @@
 from langchain_community.document_loaders import PyPDFLoader
+from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 import json
 import os
@@ -35,14 +36,7 @@ def load_pdf_documents(file_path, chunk_size=1000, chunk_overlap=100):
 
 def load_jsonl_data(file_path):
     """
-    Loads a JSONL file containing questions and answers.
-    Based on the logic from cell 10.
-    
-    Args:
-        file_path (str): The path to the JSONL file (e.g., "data/raw/train.jsonl")
-        
-    Returns:
-        list: A list of dictionaries, where each dict has 'question' and 'answer'.
+    Loads raw JSONL file containing questions and answers.
     """
     if not os.path.exists(file_path):
         print(f"Error: File not found at {file_path}")
@@ -55,6 +49,46 @@ def load_jsonl_data(file_path):
             data.append(json.loads(line))
     print(f"Loaded {len(data)} Q&A pairs.")
     return data
+
+def load_jsonl_documents(file_path, chunk_size=1000, chunk_overlap=150):
+    """
+    Loads JSONL data, filters it, and safely chunks it into LangChain Documents
+    to prevent Pinecone metadata overflow.
+    """
+    raw_data = load_jsonl_data(file_path)
+    if not raw_data:
+        return []
+
+    print("Filtering and chunking massive JSONL documents...")
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap
+    )
+    
+    docs = []
+    for item in raw_data:
+        # Validate the item structure
+        if 'text' in item and 'labels' in item and 'id' in item and isinstance(item['text'], list):
+            full_text = "\n".join(item['text'])
+            base_meta = {
+                'source': f"jsonl_id_{item['id']}", 
+                'labels': ", ".join(item['labels'])
+            }
+            
+            # Split the massive string into safe chunks
+            chunks = text_splitter.split_text(full_text)
+            
+            for i, chunk in enumerate(chunks):
+                # Copy metadata so we can add a unique chunk ID
+                meta = base_meta.copy()
+                meta['chunk_id'] = f"json_id_{item['id']}_chunk_{i}"
+                
+                # Create a LangChain Document
+                docs.append(Document(page_content=chunk, metadata=meta))
+                
+    print(f"Created {len(docs)} safe JSONL document chunks.")
+    return docs
+
 
 if __name__ == '__main__':
     # This block allows you to test this file directly

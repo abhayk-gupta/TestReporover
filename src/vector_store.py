@@ -1,19 +1,18 @@
-import chromadb
 import os
+import time
 import json
-from src.data_loader import load_pdf_documents, load_jsonl_data
+from pinecone import Pinecone, ServerlessSpec
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from src.data_loader import load_pdf_documents, load_jsonl_documents
 from langchain_community.embeddings import FastEmbedEmbeddings
-
+from dotenv import load_dotenv
+load_dotenv()
 # Define paths
-DB_PATH = "db_storage/chroma_db"
 PDF_FILE_PATH = "data/raw/legal_docs.pdf"  # Use your PDF file name
 JSONL_FILE_PATH = "data/raw/train.jsonl"    # Use your JSONL file name
 
-# Ensure the storage directory exists
-os.makedirs(DB_PATH, exist_ok=True)
-
-# --- START OF FIX: Add a helper function for batching ---
-def batch_iterable(iterable, batch_size=5000):
+# --- START OF FIX: Helper function for batching ---
+def batch_iterable(iterable, batch_size=200):
     """Yields successive chunks from an iterable."""
     it = iter(iterable)
     while True:
@@ -31,22 +30,50 @@ def batch_iterable(iterable, batch_size=5000):
 
 def initialize_vector_store():
     """
-    Initializes and populates the Chroma vector store.
+    Initializes and populates the cloud-hosted Pinecone vector store using namespaces.
     """
+    # 0. Core Environment Checks
+    api_key = os.getenv("PINECONE_API_KEY")
+    index_name = os.getenv("PINECONE_INDEX_NAME", "legal-buddy")
+    
+    if not api_key:
+        raise ValueError("Missing PINECONE_API_KEY in environment variables.")
+
     print("Loading FastEmbed model (BAAI/bge-small-en-v1.5)...")
-    embedding_model = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
+    embedding_model = FastEmbedEmbeddings(
+        model_name="BAAI/bge-small-en-v1.5",
+        providers=["CUDAExecutionProvider"], # This routes it to your GPU
+        batch_size=256                       # Controls VRAM usage (lower this if it crashes)
+    )
+    print("Initializing Pinecone client...")
+    pc = Pinecone(api_key=api_key)
     
-    print("Initializing ChromaDB client...")
-    client = chromadb.PersistentClient(path=DB_PATH)
+    # Ensure the single index exists on the serverless free tier
+    existing_indexes = [index.name for index in pc.list_indexes()]
+    if index_name not in existing_indexes:
+        print(f"Creating fresh Pinecone index: '{index_name}'...")
+        pc.create_index(
+            name=index_name,
+            dimension=384,  # Perfect match for BAAI/bge-small-en-v1.5 dimensions
+            metric="cosine",
+            spec=ServerlessSpec(cloud="aws", region="us-east-1")
+        )
+        print("Pinecone index initialized.")
+        
+    index = pc.Index(index_name)
     
-    # === 1. Populate Text Collection (from PDFs) ===
+    # Fetch current stats to see vector counts per namespace
+    index_stats = index.describe_index_stats()
+    namespaces = index_stats.get('namespaces', {})
+    
+    current_text_count = namespaces.get('text_collection', {}).get('vector_count', 0)
+    current_json_count = namespaces.get('json_collection', {}).get('vector_count', 0)
+
+    # === 1. Populate Text Namespace (from PDFs) ===
     print("\n--- Processing PDF Documents ---")
     try:
-        text_collection = client.get_or_create_collection(name="text_collection")
-        
-        if text_collection.count() == 0:
-            print("Text collection is empty. Populating...")
-            # Load and chunk documents
+        if current_text_count == 0:
+            print("Text namespace is empty. Populating...")
             docs = load_pdf_documents(PDF_FILE_PATH)
             
             if docs:
@@ -54,99 +81,100 @@ def initialize_vector_store():
                 metadatas = [doc.metadata for doc in docs]
                 ids = [f"text_chunk_{i}" for i in range(len(documents))]
                 
-                print(f"Embedding {len(documents)} text documents using 'BAAI/bge-small-en-v1.5' model... (This may take a while)")
+                print(f"Embedding {len(documents)} text documents using 'BAAI/bge-small-en-v1.5'... (This may take a while)")
                 embeddings = embedding_model.embed_documents(documents)
                 
-                # --- START OF FIX: Add documents in batches ---
-                # Use a batch size smaller than the limit (e.g., 5000)
-                batch_size = 5000
+                batch_size = 200  # Optimized network chunk size for Pinecone
                 total_added = 0
-                
-                # Zip all data together for batching
                 data_batch = zip(embeddings, documents, metadatas, ids)
                 
                 for batch in batch_iterable(data_batch, batch_size):
                     batch_embeddings, batch_documents, batch_metadatas, batch_ids = zip(*batch)
                     
-                    print(f"Adding batch of {len(batch_ids)} documents to 'text_collection'...")
-                    text_collection.add(
-                        embeddings=list(batch_embeddings),
-                        documents=list(batch_documents),
-                        metadatas=list(batch_metadatas),
-                        ids=list(batch_ids)
-                    )
+                    # Pinecone stores the document text explicitly inside the metadata object
+                    vectors_to_upsert = []
+                    for emb, doc, meta, vector_id in zip(batch_embeddings, batch_documents, batch_metadatas, batch_ids):
+                        meta['text'] = doc  # standard LangChain/RAG metadata convention
+                        vectors_to_upsert.append({
+                            "id": vector_id,
+                            "values": list(emb),
+                            "metadata": meta
+                        })
+                    
+                    print(f"Upserting batch of {len(batch_ids)} vectors to namespace 'text_collection'...")
+                    index.upsert(vectors=vectors_to_upsert, namespace="text_collection")
                     total_added += len(batch_ids)
                 
-                print(f"Added {total_added} text chunks to 'text_collection'.")
-                # --- END OF FIX ---
+                print(f"Added {total_added} text chunks to namespace 'text_collection'.")
             else:
                 print("No documents found to add.")
         else:
-            print(f"'text_collection' already has {text_collection.count()} documents. Skipping.")
+            print(f"'text_collection' namespace already has {current_text_count} vectors. Skipping.")
             
     except Exception as e:
-        print(f"Error processing text collection: {e}")
+        print(f"Error processing text namespace: {e}")
 
-    # === 2. Populate JSON Collection (from JSONL) ===
+    # === 2. Populate JSON Namespace (from JSONL) ===
     print("\n--- Processing JSONL Documents ---")
     try:
-        json_collection = client.get_or_create_collection(name="json_collection")
+        print(f"JSON namespace currently has {current_json_count} vectors. Resuming/Updating...")
         
-        if json_collection.count() == 0:
-            print("JSON collection is empty. Populating...")
-            qa_pairs_raw = load_jsonl_data(JSONL_FILE_PATH)
+        docs = load_jsonl_documents(JSONL_FILE_PATH)
+        
+        if docs:
+            documents = [doc.page_content for doc in docs]
+            metadatas = [doc.metadata for doc in docs]
+            ids = [meta.pop('chunk_id') for meta in metadatas]
+
+            # --- START OF STREAMING EMBEDDING & UPSERT ---
+            total_docs = len(documents)
+            print(f"\n[START] Processing {total_docs} JSONL chunks...")
             
-            if qa_pairs_raw:
-                print("Validating JSONL documents...")
-                docs_filtered = []
-                for item in qa_pairs_raw:
-                    if 'text' in item and 'labels' in item and 'id' in item and isinstance(item['text'], list):
-                        docs_filtered.append(item)
+            batch_size = 500
+            total_added = 0
+            
+            for i in range(0, total_docs, batch_size):
+                chunk_docs = documents[i : i + batch_size]
+                chunk_metas = metadatas[i : i + batch_size]
+                chunk_ids = ids[i : i + batch_size]
                 
-                print(f"Found {len(docs_filtered)} valid documents out of {len(qa_pairs_raw)} total.")
+                chunk_embeddings = embedding_model.embed_documents(chunk_docs)
                 
-                if not docs_filtered:
-                    print("No valid documents found to add.")
-                    return
-
-                documents = ["\n".join(item['text']) for item in docs_filtered] 
-                metadatas = [
-                    {'source': f"jsonl_id_{item['id']}", 'labels': ", ".join(item['labels'])} 
-                    for item in docs_filtered
-                ] 
-                ids = [f"json_id_{item['id']}" for item in docs_filtered]
-
-                print(f"Embedding {len(documents)} JSONL documents using 'BAAI/bge-small-en-v1.5' model... (This may take a while)")
-                embeddings = embedding_model.embed_documents(documents)
+                vectors_to_upsert = []
+                for emb, doc, meta, vector_id in zip(chunk_embeddings, chunk_docs, chunk_metas, chunk_ids):
+                    meta['text'] = doc 
+                    vectors_to_upsert.append({
+                        "id": vector_id,
+                        "values": list(emb),
+                        "metadata": meta
+                    })
                 
-                # --- START OF FIX: Add documents in batches ---
-                batch_size = 5000
-                total_added = 0
+                # --- THE BULLETPROOF RETRY LOOP ---
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        index.upsert(vectors=vectors_to_upsert, namespace="json_collection")
+                        break 
+                    except Exception as e:
+                        if "429" in str(e) or "Too Many Requests" in str(e):
+                            sleep_time = (attempt + 1) * 5 
+                            print(f"   [!] Pinecone rate limit hit. Pausing for {sleep_time} seconds...")
+                            time.sleep(sleep_time)
+                        else:
+                            print(f"   [!] Unexpected error: {e}")
+                            raise e 
+                # -----------------------------------
                 
-                # Zip all data together for batching
-                data_batch = zip(embeddings, documents, metadatas, ids)
-                
-                for batch in batch_iterable(data_batch, batch_size):
-                    batch_embeddings, batch_documents, batch_metadatas, batch_ids = zip(*batch)
-                    
-                    print(f"Adding batch of {len(batch_ids)} documents to 'json_collection'...")
-                    json_collection.add(
-                        embeddings=list(batch_embeddings),
-                        documents=list(batch_documents),
-                        metadatas=list(batch_metadatas),
-                        ids=list(batch_ids)
-                    )
-                    total_added += len(batch_ids)
-                
-                print(f"Added {total_added} documents to 'json_collection'.")
-                # --- END OF FIX ---
-            else:
-                print("No JSONL documents found to add.")
+                total_added += len(vectors_to_upsert)
+                percentage = (total_added / total_docs) * 100
+                print(f"   ✓ Embedded & Upserted {total_added}/{total_docs} chunks [{percentage:.2f}%]")
+            
+            print(f"\n[SUCCESS] Added all {total_added} vectors to namespace 'json_collection'.\n")
         else:
-            print(f"'json_collection' already has {json_collection.count()} documents. Skipping.")
+            print("No JSONL documents found to add.")
             
     except Exception as e:
-        print(f"Error processing JSON collection: {e}")
+        print(f"Error processing JSON namespace: {e}")
 
     print("\nVector store initialization complete.")
 

@@ -8,10 +8,9 @@ from langchain_core.documents import Document
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser, JsonOutputParser
 from pydantic import BaseModel, Field
-from langchain_chroma import Chroma
+from langchain_pinecone import PineconeVectorStore
 from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_tavily import TavilySearch  # This is the new, correct import
-from langchain_core.documents import Document
 
 # LangGraph Imports
 from langgraph.graph import END, StateGraph
@@ -22,16 +21,25 @@ from src.chat_history import get_user_chat_history
 
 # --- 1. SET UP TOOLS ---
 
-# Initialize our local vector store
 print("Initializing LangChain vector store wrappers with FastEmbed...")
 lc_embedder = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
-vector_store = Chroma(
-    persist_directory="db_storage/chroma_db",
-    collection_name="text_collection",
-    embedding_function=lc_embedder
+
+# Initialize Pinecone Retriever pointing to your cloud index and namespace
+index_name = os.getenv("PINECONE_INDEX_NAME", "legal-buddy")
+
+# 1. Setup PDF Database Connection
+vector_store_pdf = PineconeVectorStore(
+    index_name=index_name,
+    embedding=lc_embedder,
+    namespace="text_collection"  
 )
-# We retrieve 3 docs to give the grader more options
-retriever = vector_store.as_retriever(search_kwargs={"k": 3}) 
+
+# 2. Setup JSON Database Connection
+vector_store_json = PineconeVectorStore(
+    index_name=index_name,
+    embedding=lc_embedder,
+    namespace="json_collection"  
+)
 
 # Initialize our new web search tool
 print("Initializing Tavily web search tool...")
@@ -57,13 +65,23 @@ def load_history(state: GraphState):
     return {"chat_history": history}
 
 def retrieve(state: GraphState):
-    """Retrieves documents from our local ChromaDB."""
+    """Retrieves documents from BOTH local namespaces in Pinecone."""
     print("---NODE: RETRIEVING DOCUMENTS---")
     question = state["question"]
-    documents = retriever.invoke(question)
-    print(f"Retrieved {len(documents)} documents locally.")
+    
+    # 1. Search the PDF documents (get top 2)
+    print("Searching PDF Collection...")
+    pdf_docs = vector_store_pdf.similarity_search(question, k=2)
+    
+    # 2. Search the massive JSONL statutes (get top 3)
+    print("Searching JSON Collection...")
+    json_docs = vector_store_json.similarity_search(question, k=3)
+    
+    # 3. Combine the documents together
+    documents = pdf_docs + json_docs
+    
+    print(f"Retrieved {len(documents)} total documents locally.")
     return {"documents": documents}
-
 # --- START OF NEW MULTI-FACTOR GRADER ---
 
 # Define the Pydantic schema for our new grader
@@ -158,7 +176,11 @@ def web_search(state: GraphState):
     web_docs = [
         Document(
             page_content=snippet,
-            metadata={"source": "web_search", "title": "Tavily Search Result"}
+            metadata={
+                "source": "Tavily Web Search", 
+                "confidence": "low", # Tells the LLM this isn't an official legal doc
+                "warning": "Verify this information before advising the user."
+            }
         ) for snippet in search_results
     ]
     # --- END OF FIX ---
