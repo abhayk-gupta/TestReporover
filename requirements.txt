@@ -1,23 +1,47 @@
-langchain-community
-langchain-core
-langchain
-chromadb
-sentence-transformers
-fastapi
-uvicorn
-pyngrok
-langchain-experimental
-streamlit
-pandas
-langchain-text-splitters
-einops
-pypdf
-fastembed
-langchain-ollama
-requests
-langchain-groq
-python-dotenv
-langchain-chroma
-langgraph
-tavily-python
-langchain-tavily
+# ==========================================
+# Core LangChain & Orchestration
+# ==========================================
+langchain>=0.3.0,<0.5.0
+langchain-core>=0.3.0,<0.5.0
+langchain-community>=0.3.0,<0.5.0
+langchain-experimental>=0.3.0
+langchain-text-splitters>=0.3.0
+langgraph>=0.2.0
+
+# ==========================================
+# APIs, Web Frameworks & UI
+# ==========================================
+fastapi>=0.110.0
+uvicorn>=0.30.0
+streamlit>=1.35.0
+pyngrok>=7.1.0
+
+# ==========================================
+# Embeddings & Machine Learning
+# ==========================================
+sentence-transformers>=3.0.0
+fastembed>=0.3.0
+einops>=0.8.0
+
+# ==========================================
+# Integrations (LLMs & Search)
+# ==========================================
+langchain-ollama>=0.1.0
+langchain-groq>=0.1.0
+langchain-tavily>=0.1.0
+tavily-python>=0.3.0
+
+# ==========================================
+# Vector Stores
+# ==========================================
+langchain-chroma>=0.1.0
+langchain-pinecone>=0.1.0
+pinecone>=3.2.0
+
+# ==========================================
+# Data Processing & Utilities
+# ==========================================
+pandas>=2.2.0
+pypdf>=4.2.0
+requests>=2.31.0
+python-dotenv>=1.0.0
