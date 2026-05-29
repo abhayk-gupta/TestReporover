@@ -43,8 +43,16 @@ vector_store_json = PineconeVectorStore(
 
 # Initialize our new web search tool
 print("Initializing Tavily web search tool...")
-web_search_tool = TavilySearch(max_results=3) 
-
+web_search_tool = TavilySearch(
+    max_results=3,
+    search_depth="advanced",
+    include_domains=[
+        "indiankanoon.org",   # The biggest database of Indian court judgments
+        "livelaw.in",         # Top Indian legal news and analysis
+        "barandbench.com",    # Supreme court updates
+        "prsindia.org"        # Official Indian legislative bills and acts
+    ]
+)
 # --- 2. DEFINE THE CRAG "STATE" ---
 
 class GraphState(TypedDict):
@@ -82,81 +90,78 @@ def retrieve(state: GraphState):
     
     print(f"Retrieved {len(documents)} total documents locally.")
     return {"documents": documents}
-# --- START OF NEW MULTI-FACTOR GRADER ---
+# --- START OF NEW LIKERT GRADER ---
 
-# Define the Pydantic schema for our new grader
+# Define the Pydantic schema (LangChain will force Groq to output exactly this)
 class DocumentGrader(BaseModel):
-    topical_relevance: int = Field(..., description="A score from 1-10 of how well the document's *main topic* matches the query.")
-    specific_answer: int = Field(..., description="A score from 1-10 of whether the document *directly answers* the specific question.")
+    relevance_score: int = Field(
+        description="An integer score from 1 to 5 evaluating the document."
+    )
+    reasoning: str = Field(
+        description="A 1-sentence explanation of why you chose this specific score."
+    )
 
 def grade_documents(state: GraphState):
     """
-    Grades the relevance of retrieved documents using a multi-factor threshold.
+    Grades retrieved documents on a 1-5 Likert scale using Structured Output.
     """
     print("---NODE: GRADING DOCUMENTS---")
     question = state["question"]
     documents = state["documents"]
     
     if not documents:
-        print("No documents found, triggering web search.")
-        return {"relevance": "no"}
+        print("No documents found locally.")
+        return {"relevance": "no", "documents": []}
 
-    # Create a JSON parser
-    parser = JsonOutputParser(pydantic_object=DocumentGrader)
-
-    # Create the grader chain
+    # Create the grader chain with strict JSON enforcement and ANCHORED Likert scale
     grader_prompt = ChatPromptTemplate.from_template(
-        """
-        You are a strict, objective grader. Your job is to assess a document
-        based on two factors relative to the user's question:
-        1.  topical_relevance: How well does the document's main topic match? (Score 1-10)
-        2.  specific_answer: How well does the document provide a direct answer? (Score 1-10)
+        """You are an expert Indian Legal Assistant grading the relevance of a retrieved document.
         
-        Respond *only* with a valid JSON object.
+        Evaluate the document against the user's question and assign a score from 1 to 5 based strictly on this scale:
+        1 - Completely Irrelevant: The document has nothing to do with the user's question or the legal domain.
+        2 - Tangentially Related: Discusses the same broad legal area (e.g., family law) but does not address the specific issue.
+        3 - Partially Relevant: Contains useful context or definitions, but does not provide a direct answer to the core question.
+        4 - Highly Relevant: Directly addresses the user's situation and provides strong legal backing or actionable steps.
+        5 - Perfect Match: Contains the exact statute, rule, or case law needed to completely and safely answer the user's question.
         
-        {format_instructions}
-        
-        Document:
-        {document}
-        
-        User Question:
-        {question}
+        Document: {document}
+        Question: {question}
         """
     )
     
-    grader_chain = grader_prompt | llm | parser
+    # This automatically handles the JSON parsing and prevents crashes!
+    structured_llm = llm.with_structured_output(DocumentGrader)
+    grader_chain = grader_prompt | structured_llm
     
-    is_relevant = "no"
+    graded_docs = []
+    
     for doc in documents:
         try:
-            # The result is now a dictionary, e.g., {'topical_relevance': 8, 'specific_answer': 4}
-            result = grader_chain.invoke({
-                "question": question, 
-                "document": doc.page_content,
-                "format_instructions": parser.get_format_instructions()
-            })
+            # Invoke returns the Pydantic object directly
+            result = grader_chain.invoke({"question": question, "document": doc.page_content})
+            score = result.relevance_score
             
-            # Calculate the average score (out of 10)
-            avg_score = (result['topical_relevance'] + result['specific_answer']) / 2
+            print(f"Document scored {score}/5. Reason: {result.reasoning}")
             
-            print(f"Document score: {avg_score}/10")
-            
-            # --- THIS IS YOUR 50% THRESHOLD (5/10) ---
-            if avg_score >= 5:
-                is_relevant = "yes"
-                print("Decision: Document is relevant. Using local data.")
-                break # We only need one good doc to proceed
+            # If the score is 3 or higher, we keep it as useful context
+            if score >= 3:
+                doc.metadata["likert_score"] = score
+                graded_docs.append(doc)
                 
         except Exception as e:
-            # If the LLM fails to return valid JSON, just give it a 0
-            print(f"Grader failed to parse: {e}")
-            print(f"Document score: 0/10")
-            pass
-            
-    print(f"Final Grader decision: {is_relevant}")
-    return {"relevance": is_relevant}
+            print(f"Grader error (skipping document): {e}")
 
-# --- END OF NEW MULTI-FACTOR GRADER ---
+    # Decision logic
+    if len(graded_docs) > 0:
+        # Sort documents so the highest score goes to the LLM first
+        graded_docs.sort(key=lambda x: x.metadata["likert_score"], reverse=True)
+        print(f"Kept {len(graded_docs)} highly relevant documents.")
+        return {"relevance": "yes", "documents": graded_docs}
+    else:
+        print("No documents scored high enough. Triggering web search.")
+        return {"relevance": "no", "documents": []}
+
+# --- END OF NEW LIKERT GRADER ---
 
 def web_search(state: GraphState):
     """
