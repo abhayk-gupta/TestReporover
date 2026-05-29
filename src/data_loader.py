@@ -50,46 +50,46 @@ def load_jsonl_data(file_path):
     print(f"Loaded {len(data)} Q&A pairs.")
     return data
 
-def load_jsonl_documents(file_path, chunk_size=1000, chunk_overlap=150):
+# Add this function to your data_loader.py
+def stream_jsonl_documents(file_path, chunk_size=1200, chunk_overlap=150):
     """
-    Loads JSONL data, filters it, and safely chunks it into LangChain Documents
-    to prevent Pinecone metadata overflow.
+    Streams JSONL data line-by-line, chunks it, and YIELDS it one by one.
+    This entirely prevents RAM OOM errors for massive datasets.
     """
-    raw_data = load_jsonl_data(file_path)
-    if not raw_data:
-        return []
+    if not os.path.exists(file_path):
+        print(f"Error: File not found at {file_path}")
+        return
 
-    print("Filtering and chunking massive JSONL documents...")
+    print(f"Streaming JSONL data from {file_path}...")
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap
     )
     
-    docs = []
-    for item in raw_data:
-        # Validate the item structure
-        if 'text' in item and 'labels' in item and 'id' in item and isinstance(item['text'], list):
-            full_text = "\n".join(item['text'])
-            base_meta = {
-                'source': f"jsonl_id_{item['id']}", 
-                'labels': ", ".join(item['labels'])
-            }
-            
-            # Split the massive string into safe chunks
-            chunks = text_splitter.split_text(full_text)
-            
-            for i, chunk in enumerate(chunks):
-                # Copy metadata so we can add a unique chunk ID
-                meta = base_meta.copy()
-                meta['chunk_id'] = f"json_id_{item['id']}_chunk_{i}"
-                
-                # Create a LangChain Document
-                docs.append(Document(page_content=chunk, metadata=meta))
-                
-    print(f"Created {len(docs)} safe JSONL document chunks.")
-    return docs
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for line in f:
+            try:
+                item = json.loads(line)
+            except json.JSONDecodeError:
+                continue
 
-
+            if 'text' in item and 'labels' in item and 'id' in item and isinstance(item['text'], list):
+                full_text = "\n".join(item['text'])
+                base_meta = {
+                    'source': f"jsonl_id_{item['id']}", 
+                    'labels': ", ".join(item['labels'])
+                }
+                
+                chunks = text_splitter.split_text(full_text)
+                
+                for i, chunk in enumerate(chunks):
+                    meta = base_meta.copy()
+                    chunk_id = f"json_id_{item['id']}_chunk_{i}"
+                    meta['chunk_id'] = chunk_id
+                    meta['text'] = chunk  # Essential for RAG search later
+                    
+                    # YIELD hands the data back to the main loop without storing it in RAM
+                    yield chunk, meta, chunk_id
 if __name__ == '__main__':
     # This block allows you to test this file directly
     # Run: python src/data_loader.py

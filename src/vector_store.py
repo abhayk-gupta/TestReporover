@@ -1,15 +1,36 @@
 import os
 import time
 import json
+import gc
+import concurrent.futures
 from pinecone import Pinecone, ServerlessSpec
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from src.data_loader import load_pdf_documents, load_jsonl_documents
+from src.data_loader import load_pdf_documents, stream_jsonl_documents
 from langchain_community.embeddings import FastEmbedEmbeddings
 from dotenv import load_dotenv
 load_dotenv()
 # Define paths
 PDF_FILE_PATH = "data/raw/legal_docs.pdf"  # Use your PDF file name
 JSONL_FILE_PATH = "data/raw/train.jsonl"    # Use your JSONL file name
+
+# --- ADD THIS ROBUST UPLOAD HELPER FUNCTION ---
+def upload_with_retry(index, vectors, namespace, max_retries=3):
+    """Native Pinecone upsert with exponential backoff for the background thread."""
+    for attempt in range(max_retries):
+        try:
+            index.upsert(vectors=vectors, namespace=namespace)
+            # --- ADD THIS PRINT STATEMENT ---
+            print(f"   [☁️] Background Wi-Fi: Successfully uploaded {len(vectors)} vectors!")
+            return True
+        except Exception as e:
+            if "429" in str(e) or "Too Many Requests" in str(e):
+                sleep_time = (attempt + 1) * 5 
+                print(f"   [!] Pinecone rate limit hit. Pausing for {sleep_time} seconds...")
+                time.sleep(sleep_time)
+            else:
+                print(f"   [!] Unexpected error: {e}")
+                raise e 
+    return False
 
 # --- START OF FIX: Helper function for batching ---
 def batch_iterable(iterable, batch_size=200):
@@ -42,8 +63,14 @@ def initialize_vector_store():
     print("Loading FastEmbed model (BAAI/bge-small-en-v1.5)...")
     embedding_model = FastEmbedEmbeddings(
         model_name="BAAI/bge-small-en-v1.5",
-        providers=["CUDAExecutionProvider"], # This routes it to your GPU
-        batch_size=256                       # Controls VRAM usage (lower this if it crashes)
+        providers=[
+            ("CUDAExecutionProvider", {
+                "cudnn_conv_algo_search": "DEFAULT",
+                "gpu_mem_limit": 2 * 1024 * 1024 * 1024, # Limit to 2GB of VRAM
+                "arena_extend_strategy": "kSameAsRequested" # Crucial for system RAM
+            })
+        ],
+        batch_size=64   
     )
     print("Initializing Pinecone client...")
     pc = Pinecone(api_key=api_key)
@@ -115,68 +142,81 @@ def initialize_vector_store():
         print(f"Error processing text namespace: {e}")
 
     # === 2. Populate JSON Namespace (from JSONL) ===
-    print("\n--- Processing JSONL Documents ---")
+    print("\n--- Processing JSONL Documents (Streaming + Pipelining) ---")
     try:
         print(f"JSON namespace currently has {current_json_count} vectors. Resuming/Updating...")
         
-        docs = load_jsonl_documents(JSONL_FILE_PATH)
+        batch_texts, batch_metas, batch_ids = [], [], []
+        total_added = 0
+        batch_size = 256
         
-        if docs:
-            documents = [doc.page_content for doc in docs]
-            metadatas = [doc.metadata for doc in docs]
-            ids = [meta.pop('chunk_id') for meta in metadatas]
+        # --- ENHANCEMENT: Progress Tracking Metrics ---
+        start_time = time.time()
+        TOTAL_ESTIMATED_VECTORS = 311767  # Using your known dataset size
+        
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            upload_task = None
+            
+            for chunk_text, chunk_meta, chunk_id in stream_jsonl_documents(JSONL_FILE_PATH):
+                batch_texts.append(chunk_text)
+                batch_metas.append(chunk_meta)
+                batch_ids.append(chunk_id)
+                
+                if len(batch_texts) >= batch_size:
+                    chunk_embeddings = embedding_model.embed_documents(batch_texts)
+                    
+                    vectors_to_upsert = [
+                        {"id": vid, "values": list(emb), "metadata": m}
+                        for vid, emb, m in zip(batch_ids, chunk_embeddings, batch_metas)
+                    ]
+                    
+                    if upload_task:
+                        upload_task.result()
+                        
+                    upload_task = executor.submit(
+                        upload_with_retry, index, vectors_to_upsert, "json_collection"
+                    )
+                    
+                    total_added += len(batch_texts)
+                    
+                    # --- ENHANCEMENT: Print Percentage and Speed ---
+                    elapsed_time = time.time() - start_time
+                    speed = total_added / elapsed_time if elapsed_time > 0 else 0
+                    percentage = (total_added / TOTAL_ESTIMATED_VECTORS) * 100
+                    
+                    print(f"   ✓ Queued {total_added}/{TOTAL_ESTIMATED_VECTORS} [{percentage:.2f}%] | Speed: {speed:.1f} vec/sec")
+                    
+                    batch_texts.clear()
+                    batch_metas.clear()
+                    batch_ids.clear()
+                    gc.collect()
 
-            # --- START OF STREAMING EMBEDDING & UPSERT ---
-            total_docs = len(documents)
-            print(f"\n[START] Processing {total_docs} JSONL chunks...")
-            
-            batch_size = 500
-            total_added = 0
-            
-            for i in range(0, total_docs, batch_size):
-                chunk_docs = documents[i : i + batch_size]
-                chunk_metas = metadatas[i : i + batch_size]
-                chunk_ids = ids[i : i + batch_size]
-                
-                chunk_embeddings = embedding_model.embed_documents(chunk_docs)
-                
-                vectors_to_upsert = []
-                for emb, doc, meta, vector_id in zip(chunk_embeddings, chunk_docs, chunk_metas, chunk_ids):
-                    meta['text'] = doc 
-                    vectors_to_upsert.append({
-                        "id": vector_id,
-                        "values": list(emb),
-                        "metadata": meta
-                    })
-                
-                # --- THE BULLETPROOF RETRY LOOP ---
-                max_retries = 3
-                for attempt in range(max_retries):
-                    try:
-                        index.upsert(vectors=vectors_to_upsert, namespace="json_collection")
-                        break 
-                    except Exception as e:
-                        if "429" in str(e) or "Too Many Requests" in str(e):
-                            sleep_time = (attempt + 1) * 5 
-                            print(f"   [!] Pinecone rate limit hit. Pausing for {sleep_time} seconds...")
-                            time.sleep(sleep_time)
-                        else:
-                            print(f"   [!] Unexpected error: {e}")
-                            raise e 
-                # -----------------------------------
-                
-                total_added += len(vectors_to_upsert)
-                percentage = (total_added / total_docs) * 100
-                print(f"   ✓ Embedded & Upserted {total_added}/{total_docs} chunks [{percentage:.2f}%]")
-            
-            print(f"\n[SUCCESS] Added all {total_added} vectors to namespace 'json_collection'.\n")
-        else:
-            print("No JSONL documents found to add.")
-            
+            # Upload Leftovers
+            if batch_texts:
+                chunk_embeddings = embedding_model.embed_documents(batch_texts)
+                vectors_to_upsert = [
+                    {"id": vid, "values": list(emb), "metadata": m} 
+                    for vid, emb, m in zip(batch_ids, chunk_embeddings, batch_metas)
+                ]
+                if upload_task:
+                    upload_task.result() 
+                upload_with_retry(index, vectors_to_upsert, "json_collection")
+                total_added += len(batch_texts)
+
+            total_time = (time.time() - start_time) / 60
+            print(f"\n[SUCCESS] Added all {total_added} vectors in {total_time:.2f} minutes.\n")
+
     except Exception as e:
         print(f"Error processing JSON namespace: {e}")
 
     print("\nVector store initialization complete.")
 
 if __name__ == "__main__":
-    initialize_vector_store()
+    try:
+        initialize_vector_store()
+    except KeyboardInterrupt:
+        print("\n\n[🛑] Process interrupted by user (Ctrl+C).")
+        print("Waiting for the final background Wi-Fi upload to finish before closing safely...")
+        # Because we used a 'with ThreadPoolExecutor' block, Python will naturally 
+        # wait for the current upload_task to finish before actually closing.
+        print("Safely shut down. No data was corrupted!")
