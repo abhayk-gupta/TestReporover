@@ -1,6 +1,7 @@
 import os
 import json
 import requests
+import logging # <-- Standard Python Logging
 from enum import Enum
 from typing_extensions import TypedDict
 from typing import List
@@ -21,31 +22,36 @@ from langgraph.graph import END, StateGraph
 from src.llm import llm 
 from src.chat_history import get_user_chat_history 
 
+from dotenv import load_dotenv
+load_dotenv()
+
+# --- 0. CONFIGURE ENTERPRISE LOGGING ---
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger("rag_pipeline")
+
 # --- 1. SET UP INFRASTRUCTURE ---
 
-print("Initializing LangChain vector store wrappers with FastEmbed...")
+logger.info("Initializing LangChain vector store wrappers with FastEmbed...")
 lc_embedder = FastEmbedEmbeddings(model_name="BAAI/bge-small-en-v1.5")
 
 index_name = os.getenv("PINECONE_INDEX_NAME", "legal-buddy")
 
-# Relational connections to your Pinecone Cloud Namespaces
 vector_store_pdf = PineconeVectorStore(index_name=index_name, embedding=lc_embedder, namespace="text_collection")
 vector_store_json = PineconeVectorStore(index_name=index_name, embedding=lc_embedder, namespace="json_collection")
 
-# Domain-whitelisted Tavily Engine setup
-print("Initializing Tavily legal web search...")
+logger.info("Initializing Tavily legal web search...")
 web_search_tool = TavilySearch(
     max_results=3,
     search_depth="advanced",
     include_domains=[
-        "indiankanoon.org",   # Core Indian court judgment database
-        "livelaw.in",         # Indian regulatory updates
-        "barandbench.com",    # Legal news and reporting
-        "prsindia.org"        # Indian legislative bills and statutes
+        "indiankanoon.org", "livelaw.in", "barandbench.com", "prsindia.org"
     ]
 )
 
-# Upstash Environment Identifiers
 UPSTASH_URL = os.getenv("UPSTASH_VECTOR_REST_URL")
 UPSTASH_TOKEN = os.getenv("UPSTASH_VECTOR_REST_TOKEN")
 
@@ -82,14 +88,12 @@ class GraphState(TypedDict):
 # --- 4. ENGINE WORKFLOW NODES ---
 
 def load_history(state: GraphState):
-    """Loads a context-bounded window of chat records into active state."""
-    print("---NODE: LOADING HISTORY---")
+    logger.info(f"[Session: {state['session_id']}] ---NODE: LOADING HISTORY---")
     history = get_user_chat_history(state["user_id"], state["session_id"], limit=10)
     return {"chat_history": history}
 
 def supervisor_router(state: GraphState):
-    """Classifies incoming query context across 4 dedicated security paths."""
-    print("---NODE: SUPERVISOR ROUTER---")
+    logger.info(f"[Session: {state['session_id']}] ---NODE: SUPERVISOR ROUTER---")
     question = state["question"]
     
     router_prompt = ChatPromptTemplate.from_template(
@@ -103,33 +107,33 @@ def supervisor_router(state: GraphState):
         """
     )
     
-    # Secure JSON Enforcement using LangChain structured extraction methods
     structured_llm = llm.with_structured_output(RouterClassifier)
     classifier_chain = router_prompt | structured_llm
     
-    result = classifier_chain.invoke({"question": question})
-    print(f"Supervisor Decision -> Category: {result.intent.value} | Reason: {result.reasoning}")
-    return {"intent": result.intent.value}
+    try:
+        result = classifier_chain.invoke({"question": question})
+        logger.info(f"[Session: {state['session_id']}] Supervisor Decision -> Category: {result.intent.value} | Reason: {result.reasoning}")
+        return {"intent": result.intent.value}
+    except Exception as e:
+        logger.error(f"[Session: {state['session_id']}] Router failed. Defaulting to legal_search. Error: {e}", exc_info=True)
+        return {"intent": "legal_search"}
 
 def handle_greeting(state: GraphState):
-    """Instant zero-token response for salutations."""
-    print("---NODE: HANDLING CASUAL GREETING---")
+    logger.info(f"[Session: {state['session_id']}] ---NODE: HANDLING CASUAL GREETING---")
     return {"generation": "Hello! I am LegalBuddy, your empathetic legal guide. Tell me about your situation or ask a question about Indian regulations, and I'll break down how the law applies."}
 
 def handle_out_of_scope(state: GraphState):
-    """Instant zero-token route block for non-legal queries."""
-    print("---NODE: ENFORCING BOUNDARY GUARDRAIL---")
+    logger.warning(f"[Session: {state['session_id']}] ---NODE: ENFORCING BOUNDARY GUARDRAIL---")
     return {"generation": "I can only assist with inquiries regarding Indian legal codes, compliance procedures, and statutes. I am unable to answer questions outside the legal domain."}
 
 def handle_clarification(state: GraphState):
-    """Extracts the immediate preceding bot statement from Postgres and explains it simply."""
-    print("---NODE: REWRITING PREVIOUS RESPONSE SIMPLER---")
+    logger.info(f"[Session: {state['session_id']}] ---NODE: REWRITING PREVIOUS RESPONSE SIMPLER---")
     history = state["chat_history"]
     
-    # Parse out the last Bot record string text line
     bot_utterances = [line.replace("Bot: ", "").strip() for line in history.split("\n") if line.startswith("Bot:")]
     
     if not bot_utterances:
+        logger.warning(f"[Session: {state['session_id']}] Clarification requested, but no history found.")
         return {"generation": "I would love to make that simpler for you, but I do not see any previous answers recorded in our active session thread yet! What topic can I clear up?"}
     
     last_bot_output = bot_utterances[-1]
@@ -148,8 +152,7 @@ def handle_clarification(state: GraphState):
     return {"generation": clarified_text}
 
 def query_rewriter(state: GraphState):
-    """Resolves conversational pronouns to construct a clean legal search string."""
-    print("---NODE: RUNNING QUERY REWRITER---")
+    logger.info(f"[Session: {state['session_id']}] ---NODE: RUNNING QUERY REWRITER---")
     question = state["question"]
     history = state["chat_history"]
     
@@ -170,64 +173,59 @@ def query_rewriter(state: GraphState):
     )
     rewriter_chain = rewriter_prompt | llm | StrOutputParser()
     optimized_output = rewriter_chain.invoke({"chat_history": history, "question": question})
-    print(f"Query Refined For Retrieval: '{optimized_output}'")
+    logger.debug(f"[Session: {state['session_id']}] Query Refined For Retrieval: '{optimized_output}'")
     return {"optimized_query": optimized_output, "cache_hit": False}
 
 def check_semantic_cache(state: GraphState):
-    """Inspects Upstash Vector backend for a semantic match on cached fragments."""
-    print("---NODE: EXECUTING SEMANTIC CACHE INSPECTION---")
+    logger.info(f"[Session: {state['session_id']}] ---NODE: EXECUTING SEMANTIC CACHE INSPECTION---")
     if not UPSTASH_URL or not UPSTASH_TOKEN:
+        logger.warning("Upstash credentials missing. Bypassing semantic cache check.")
         return {"cache_hit": False}
         
     query = state["optimized_query"]
     
     try:
-        # Generate the dense embedding vector locally using the GPU-backed wrapper
+        base_url = UPSTASH_URL.rstrip('/')
         query_vector = lc_embedder.embed_query(query)
-        
         headers = {"Authorization": f"Bearer {UPSTASH_TOKEN}", "Content-Type": "application/json"}
         payload = {"vector": query_vector, "topK": 1, "includeMetadata": True}
         
-        response = requests.post(f"{UPSTASH_URL}/query", headers=headers, json=payload)
+        response = requests.post(f"{base_url}/query", headers=headers, json=payload)
         
         if response.status_code == 200:
             query_results = response.json().get("result", [])
             if query_results and query_results[0].get("score", 0) >= 0.98:
-                print(f"🎉 CACHE HIT CONFIRMED! Cosine Match Score: {query_results[0]['score']:.4f}")
+                logger.info(f"[Session: {state['session_id']}] 🎉 CACHE HIT CONFIRMED! Cosine Match Score: {query_results[0]['score']:.4f}")
                 metadata_payload = query_results[0]["metadata"]
                 
-                # Unpack and map the raw JSON string text list back to Document structures
                 raw_unserialized_docs = json.loads(metadata_payload["documents"])
                 cached_doc_objects = [
                     Document(page_content=item["page_content"], metadata=item["metadata"])
                     for item in raw_unserialized_docs
                 ]
                 return {"documents": cached_doc_objects, "cache_hit": True}
-                
     except Exception as e:
-        print(f"Cache pipeline check bypassed due to exception: {e}")
+        logger.error(f"[Session: {state['session_id']}] Cache pipeline check bypassed due to exception: {e}")
         
-    print("Cache Miss. Proceeding to Pinecone Vector Index lookup.")
+    logger.info(f"[Session: {state['session_id']}] Cache Miss. Proceeding to Pinecone Vector Index lookup.")
     return {"cache_hit": False}
 
 def retrieve(state: GraphState):
-    """Pulls relevant source text chunks from Pinecone cloud index namespaces."""
     if state["cache_hit"]:
-        return None # Cache layer handled this route execution
+        return None 
         
-    print("---NODE: SEARCHING PINECONE COLLECTION---")
+    logger.info(f"[Session: {state['session_id']}] ---NODE: SEARCHING PINECONE COLLECTION---")
     query = state["optimized_query"]
     
     pdf_docs = vector_store_pdf.similarity_search(query, k=2)
     json_docs = vector_store_json.similarity_search(query, k=3)
     
     total_found = pdf_docs + json_docs
-    print(f"Pinecone Retrieval complete. Pulled {len(total_found)} total documents locally.")
+    logger.info(f"[Session: {state['session_id']}] Pinecone Retrieval complete. Pulled {len(total_found)} total documents locally.")
     return {"documents": total_found}
 
 def grade_documents(state: GraphState):
-    """Filters retrieved legal components using an anchored 1-5 Likert metrics model."""
-    print("---NODE: GRADING RETRIEVED CHUNKS---")
+    logger.info(f"[Session: {state['session_id']}] ---NODE: GRADING RETRIEVED CHUNKS---")
     question = state["optimized_query"]
     documents = state["documents"]
     
@@ -257,34 +255,38 @@ def grade_documents(state: GraphState):
             if result.relevance_score >= 3:
                 doc.metadata["likert_score"] = result.relevance_score
                 validated_documents.append(doc)
-                print(f"   [+] Kept Chunk ({result.relevance_score}/5): {result.reasoning}")
+                logger.debug(f"[Session: {state['session_id']}] [+] Kept Chunk ({result.relevance_score}/5): {result.reasoning}")
         except Exception as e:
-            print(f"Grader runtime tracking exception bypassed: {e}")
+            logger.error(f"[Session: {state['session_id']}] Grader runtime exception for chunk: {e}")
             
     if validated_documents:
         validated_documents.sort(key=lambda x: x.metadata["likert_score"], reverse=True)
+        logger.info(f"[Session: {state['session_id']}] Retained {len(validated_documents)} chunks after Likert grading.")
         return {"relevance": "yes", "documents": validated_documents}
         
-    print("All chunks failed relevance metrics thresholds. Triggering Corrective Web Search.")
+    logger.warning(f"[Session: {state['session_id']}] All chunks failed relevance threshold. Triggering Corrective Web Search.")
     return {"relevance": "no", "documents": []}
 
 def web_search(state: GraphState):
-    """Executes a fallback web search over verified Indian domains via Tavily Engine."""
-    print("---NODE: INITIATING TAVILY WEB SEARCH ROUTE---")
+    logger.info(f"[Session: {state['session_id']}] ---NODE: INITIATING TAVILY WEB SEARCH ROUTE---")
     query = state["optimized_query"]
     
-    raw_web_snippets = web_search_tool.invoke(query)
-    formatted_web_docs = [
-        Document(
-            page_content=item,
-            metadata={"source": "Tavily Web Search", "confidence": "low"}
-        ) for item in raw_web_snippets
-    ]
-    return {"documents": formatted_web_docs}
+    try:
+        raw_web_snippets = web_search_tool.invoke(query)
+        formatted_web_docs = [
+            Document(
+                page_content=item,
+                metadata={"source": "Tavily Web Search", "confidence": "low"}
+            ) for item in raw_web_snippets
+        ]
+        logger.info(f"[Session: {state['session_id']}] Successfully extracted {len(formatted_web_docs)} web snippets.")
+        return {"documents": formatted_web_docs}
+    except Exception as e:
+        logger.error(f"[Session: {state['session_id']}] Tavily search failed: {e}", exc_info=True)
+        return {"documents": []}
 
 def generate(state: GraphState):
-    """Synthesizes the finalized context-grounded empathetic response answer string."""
-    print("---NODE: SYNTHESIZING FINALIZED ANSWER---")
+    logger.info(f"[Session: {state['session_id']}] ---NODE: SYNTHESIZING FINALIZED ANSWER---")
     question = state["question"]
     documents = state["documents"]
     chat_history = state["chat_history"]
@@ -314,6 +316,7 @@ def generate(state: GraphState):
     compiled_context = "\n\n---\n\n".join(f"Source: {d.metadata.get('source', 'N/A')}\n{d.page_content}" for d in documents)
     finalized_text = generation_chain.invoke({"context": compiled_context, "question": question, "chat_history": chat_history})
     
+    logger.info(f"[Session: {state['session_id']}] Generation Complete.")
     return {"generation": finalized_text}
 
 # --- 5. CONDITIONAL GRAPH ROUTING EDGES ---
@@ -329,10 +332,9 @@ def edge_relevance_evaluation(state: GraphState):
 
 # --- 6. ASSEMBLE GRAPH ORCHESTRATION WORKFLOW ---
 
-print("Assembling Multi-Agent StateGraph Brain...")
+logger.info("Assembling Multi-Agent StateGraph Brain...")
 workflow = StateGraph(GraphState)
 
-# Append Nodes
 workflow.add_node("load_history", load_history)
 workflow.add_node("supervisor_router", supervisor_router)
 workflow.add_node("handle_greeting", handle_greeting)
@@ -345,7 +347,6 @@ workflow.add_node("grade_documents", grade_documents)
 workflow.add_node("web_search", web_search)
 workflow.add_node("generate", generate)
 
-# Map Connections
 workflow.set_entry_point("load_history")
 workflow.add_edge("load_history", "supervisor_router")
 
@@ -360,12 +361,10 @@ workflow.add_conditional_edges(
     }
 )
 
-# Standard Exit Mappings
 workflow.add_edge("handle_greeting", END)
 workflow.add_edge("handle_out_of_scope", END)
 workflow.add_edge("handle_clarification", END)
 
-# Legal Execution Path Mappings
 workflow.add_edge("query_rewriter", "check_semantic_cache")
 workflow.add_conditional_edges(
     "check_semantic_cache",
@@ -388,15 +387,16 @@ workflow.add_edge("web_search", "generate")
 workflow.add_edge("generate", END)
 
 app = workflow.compile()
-print("CRAG Multi-Agent workflow engine successfully compiled.")
+logger.info("CRAG Multi-Agent workflow engine successfully compiled.")
 
 # --- 7. CORE RUNTIME BACKEND ROUTING INTERFACE ---
 
 def get_rag_response(query: str, user_id: str, session_id: str):
-    """Executes Graph engine compilation and extracts structural evaluation keys."""
     if not llm:
+        logger.error("Core LLM engine initialization failure.")
         return {"generation": "Error: Core LLM engine initialization failure."}
         
+    logger.info(f"Initiating RAG pipeline for User: {user_id} | Session: {session_id}")
     inputs = {"question": query, "user_id": user_id, "session_id": session_id}
     final_execution_state = app.invoke(inputs)
     
