@@ -1,4 +1,4 @@
-# LegalBuddy: Production AI-Powered Legal Assistant
+# LegalBuddy: AI-Powered Legal Assistant
 
 LegalBuddy is an Corrective Retrieval-Augmented Generation (CRAG) system designed to evaluate complex Indian statutory frameworks. The application features a decoupled architecture combining an asynchronous FastAPI streaming backend with a modern Next.js UI workspace.
 
