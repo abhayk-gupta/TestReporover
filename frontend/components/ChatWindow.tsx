@@ -17,7 +17,7 @@ interface ChatWindowProps {
 }
 
 export default function ChatWindow({ apiUrl, userId, sessionId, messages, setMessages }: ChatWindowProps) {
-    const [input, setInput] = useState<string>(string = "");
+    const [input, setInput] = useState<string>("");
     const [loading, setLoading] = useState<boolean>(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -35,7 +35,13 @@ export default function ChatWindow({ apiUrl, userId, sessionId, messages, setMes
 
         const userQuery = input.trim();
         setInput("");
-        setMessages((prev) => [...prev, { role: "user", content: userQuery }]);
+
+        // Stage the user's inquiry and provision a target workspace chunk for the streamed response
+        setMessages((prev) => [
+            ...prev,
+            { role: "user", content: userQuery },
+            { role: "assistant", content: "" }
+        ]);
         setLoading(true);
 
         try {
@@ -49,23 +55,47 @@ export default function ChatWindow({ apiUrl, userId, sessionId, messages, setMes
                 }),
             });
 
-            const data = await response.json();
-
             if (!response.ok) {
                 throw new Error(`Inference Engine Exception: Status Code ${response.status}`);
             }
 
-            setMessages((prev) => [...prev, { role: "assistant", content: data.response }]);
-        } catch (error: any) {
-            setMessages((prev) => [
-                ...prev,
-                {
-                    role: "assistant",
-                    content: `Network Communication Failure: Could not establish sync with the core pipeline. ${error.message || ""}`
-                },
-            ]);
-        } finally {
+            if (!response.body) {
+                throw new Error("ReadableStream interface unavailable on target response payload.");
+            }
+
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder("utf-8");
+            let done = false;
+
+            // Disable global spinner as token values begin streaming into the UI workspace
             setLoading(false);
+
+            while (!done) {
+                const { value, done: doneReading } = await reader.read();
+                done = doneReading;
+
+                const chunkValue = decoder.decode(value, { stream: !done });
+
+                // Functional state mutation to attach text chunks directly to the current block frame
+                setMessages((prev) => {
+                    const updated = [...prev];
+                    const lastIdx = updated.length - 1;
+                    if (lastIdx >= 0 && updated[lastIdx].role === "assistant") {
+                        updated[lastIdx].content += chunkValue;
+                    }
+                    return updated;
+                });
+            }
+        } catch (error: any) {
+            setLoading(false);
+            setMessages((prev) => {
+                const updated = [...prev];
+                const lastIdx = updated.length - 1;
+                if (lastIdx >= 0 && updated[lastIdx].role === "assistant") {
+                    updated[lastIdx].content = `Network Communication Failure: Could not synchronize token blocks. ${error.message || ""}`;
+                }
+                return updated;
+            });
         }
     };
 
@@ -84,21 +114,26 @@ export default function ChatWindow({ apiUrl, userId, sessionId, messages, setMes
                     </div>
                 )}
 
-                {messages.map((msg, index) => (
-                    <div
-                        key={index}
-                        className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-                    >
+                {messages.map((msg, index) => {
+                    // If the assistant message content is still empty and loading state is active, render nothing here
+                    if (msg.role === "assistant" && !msg.content && loading) return null;
+
+                    return (
                         <div
-                            className={`max-w-2xl rounded-xl px-4 py-2.5 text-sm shadow-md border ${msg.role === "user"
-                                ? "bg-emerald-600 border-emerald-500 text-white"
-                                : "bg-slate-900 border-slate-800 text-slate-200"
-                                }`}
+                            key={index}
+                            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                         >
-                            <p className="whitespace-pre-line leading-relaxed">{msg.content}</p>
+                            <div
+                                className={`max-w-2xl rounded-xl px-4 py-2.5 text-sm shadow-md border ${msg.role === "user"
+                                    ? "bg-emerald-600 border-emerald-500 text-white"
+                                    : "bg-slate-900 border-slate-800 text-slate-200"
+                                    }`}
+                            >
+                                <p className="whitespace-pre-line leading-relaxed">{msg.content}</p>
+                            </div>
                         </div>
-                    </div>
-                ))}
+                    );
+                })}
 
                 {loading && (
                     <div className="flex justify-start">
@@ -108,7 +143,7 @@ export default function ChatWindow({ apiUrl, userId, sessionId, messages, setMes
                                 <div className="h-1.5 w-1.5 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }}></div>
                                 <div className="h-1.5 w-1.5 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }}></div>
                             </div>
-                            <span className="text-xs font-mono tracking-wide text-slate-500">Parsing knowledge namespaces...</span>
+                            <span className="text-xs font-mono tracking-wide text-slate-500">Initializing streaming pipeline context channels...</span>
                         </div>
                     </div>
                 )}
