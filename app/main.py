@@ -1,11 +1,14 @@
-import os
+import hashlib
 import json
+import os
+
 import requests
 import uvicorn
 import hashlib
 import asyncio
 from fastapi import FastAPI, HTTPException, status
 from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -24,6 +27,16 @@ from src.chat_history import (
 app = FastAPI(
     title="LegalBuddy API",
     description="Production Secure API Framework for LegalBuddy CRAG"
+)
+
+# ---- CONFIGURE CORS MIDDLEWARE HERE ----
+# This intercepts browser preflight OPTIONS requests and prevents 405 errors
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # URL where your Next.js app runs
+    allow_credentials=True,
+    allow_methods=["*"],                      # Allows POST, GET, OPTIONS, etc.
+    allow_headers=["*"],                      # Allows Content-Type, Authorization, etc.
 )
 
 @app.on_event("startup")
@@ -54,13 +67,13 @@ def sync_populate_cache(optimized_search_string: str, document_chunks: list):
     if not upstash_url or not upstash_token or not document_chunks:
         print("   [Cache Worker Error]: Missing Upstash Credentials or Documents.")
         return
-        
+
     try:
         base_url = upstash_url.rstrip('/')
         query_vector = lc_embedder.embed_query(optimized_search_string)
         
         packaged_payload = json.dumps([
-            {"page_content": item.page_content, "metadata": item.metadata} 
+            {"page_content": item.page_content, "metadata": item.metadata}
             for item in document_chunks
         ])
         
@@ -71,7 +84,7 @@ def sync_populate_cache(optimized_search_string: str, document_chunks: list):
             "vector": query_vector,
             "metadata": {"documents": packaged_payload}
         }
-        
+
         res = requests.post(f"{base_url}/upsert", headers=headers, json=payload)
         
         if res.status_code == 200:
