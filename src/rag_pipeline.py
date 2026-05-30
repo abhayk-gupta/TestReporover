@@ -147,7 +147,7 @@ def handle_clarification(state: GraphState):
         Simple Clarifying Answer:
         """
     )
-    simplification_chain = simplification_prompt | llm | StrOutputParser()
+    simplification_chain = simplification_prompt | llm.with_config({"tags": ["final_node"]}) | StrOutputParser()
     clarified_text = simplification_chain.invoke({"past_response": last_bot_output})
     return {"generation": clarified_text}
 
@@ -311,7 +311,7 @@ def generate(state: GraphState):
     Empathetic Legal Answer:
     """
     prompt = ChatPromptTemplate.from_template(PROMPT_TEMPLATE)
-    generation_chain = prompt | llm | StrOutputParser()
+    generation_chain = prompt | llm.with_config({"tags": ["final_node"]}) | StrOutputParser()
     
     compiled_context = "\n\n---\n\n".join(f"Source: {d.metadata.get('source', 'N/A')}\n{d.page_content}" for d in documents)
     finalized_text = generation_chain.invoke({"context": compiled_context, "question": question, "chat_history": chat_history})

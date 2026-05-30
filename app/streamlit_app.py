@@ -1,7 +1,6 @@
 import streamlit as st
 import requests
 import uuid
-import time
 import os
 
 # --- Resilient Dynamic Routing Fallback ---
@@ -25,12 +24,6 @@ st.markdown("""
     .stButton>button:hover { background-color: #4CAF50; color: white; }
 </style>
 """, unsafe_allow_html=True)
-
-def stream_data(text: str):
-    """Yields words from the text with a small delay for the typing effect."""
-    for word in text.split(" "):
-        yield word + " "
-        time.sleep(0.02)
 
 # --- Session State Verification ---
 if 'authenticated' not in st.session_state:
@@ -109,20 +102,34 @@ if prompt := st.chat_input("State your legal question or case incident particula
         st.markdown(prompt)
         
     with st.chat_message("assistant"):
-        with st.spinner("Analyzing verified legal database namespaces..."):
-            try:
-                payload = {
-                    "query": prompt,
-                    "user_id": st.session_state.user_id,
-                    "session_id": st.session_state.session_id
-                }
-                response = requests.post(f"{API_URL}/chat", json=payload)
-                if response.status_code == 200:
-                    bot_response = response.json()["response"]
-                else:
-                    bot_response = f"System Error Exception: API returned status {response.status_code}"
-            except requests.exceptions.ConnectionError:
-                bot_response = "Network Error: Could not connect to the core RAG inference API."
+        try:
+            payload = {
+                "query": prompt,
+                "user_id": st.session_state.user_id,
+                "session_id": st.session_state.session_id
+            }
+            
+            # Use stream=True to process the chunked response from FastAPI without waiting
+            response = requests.post(f"{API_URL}/chat", json=payload, stream=True)
+            
+            if response.status_code == 200:
+                # Real-Time Token Generator reading from the network stream
+                def token_stream():
+                    for chunk in response.iter_content(chunk_size=1024, decode_unicode=True):
+                        if chunk:
+                            yield chunk
                 
-        st.write_stream(stream_data(bot_response))
-        st.session_state.messages.append({"role": "assistant", "content": bot_response})
+                # st.write_stream prints it dynamically and returns the final concatenated string
+                full_bot_response = st.write_stream(token_stream())
+                
+                # Save the final compiled response to session state
+                st.session_state.messages.append({"role": "assistant", "content": full_bot_response})
+            else:
+                err_msg = f"System Error Exception: API returned status {response.status_code}"
+                st.error(err_msg)
+                st.session_state.messages.append({"role": "assistant", "content": err_msg})
+                
+        except requests.exceptions.ConnectionError:
+            err_msg = "Network Error: Could not connect to the core RAG inference API."
+            st.error(err_msg)
+            st.session_state.messages.append({"role": "assistant", "content": err_msg})
