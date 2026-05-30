@@ -4,7 +4,7 @@ __pycache__/
 *.pyc
 
 # Data & Databases (we will use volumes)
-data/
+data/processed/
 db_storage/
 
 # Secrets

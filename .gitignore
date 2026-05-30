@@ -10,8 +10,8 @@ venv/
 db_storage/
 
 # Data & Models
-data/raw/
-data/processed/
+data/raw/*
+data/processed/*
 models/
 
 # IDE / OS
