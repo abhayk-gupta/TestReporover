@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, FormEvent } from "react";
+import { Eye, EyeOff, Shield } from "lucide-react";
 
 interface AuthFormProps {
     apiUrl: string;
@@ -11,6 +12,7 @@ export default function AuthForm({ apiUrl, onAuthSuccess }: AuthFormProps) {
     const [isLogin, setIsLogin] = useState<boolean>(true);
     const [username, setUsername] = useState<string>("");
     const [password, setPassword] = useState<string>("");
+    const [showPassword, setShowPassword] = useState<boolean>(false);
     const [error, setError] = useState<string>("");
     const [successMessage, setSuccessMessage] = useState<string>("");
     const [loading, setLoading] = useState<boolean>(false);
@@ -39,7 +41,7 @@ export default function AuthForm({ apiUrl, onAuthSuccess }: AuthFormProps) {
             const data = await response.json();
 
             if (!response.ok) {
-                throw new Error(data.detail || "Authentication execution anomaly experienced.");
+                throw new Error(data.detail || "Authentication processing anomaly experienced.");
             }
 
             if (isLogin) {
@@ -48,6 +50,7 @@ export default function AuthForm({ apiUrl, onAuthSuccess }: AuthFormProps) {
                 setSuccessMessage("Account securely provisioned. Proceed to the sign in interface.");
                 setIsLogin(true);
                 setPassword("");
+                setShowPassword(false);
             }
         } catch (err: any) {
             setError(err.message || "Target core service authentication node unreachable.");
@@ -63,7 +66,7 @@ export default function AuthForm({ apiUrl, onAuthSuccess }: AuthFormProps) {
                     type="button"
                     className={`flex-1 pb-3 text-sm font-medium text-center border-b-2 transition-colors ${isLogin ? "border-emerald-500 text-white" : "border-transparent text-slate-400 hover:text-slate-200"
                         }`}
-                    onClick={() => { setIsLogin(true); setError(""); }}
+                    onClick={() => { setIsLogin(true); setError(""); setShowPassword(false); }}
                 >
                     Sign In
                 </button>
@@ -71,7 +74,7 @@ export default function AuthForm({ apiUrl, onAuthSuccess }: AuthFormProps) {
                     type="button"
                     className={`flex-1 pb-3 text-sm font-medium text-center border-b-2 transition-colors ${!isLogin ? "border-emerald-500 text-white" : "border-transparent text-slate-400 hover:text-slate-200"
                         }`}
-                    onClick={() => { setIsLogin(false); setError(""); }}
+                    onClick={() => { setIsLogin(false); setError(""); setShowPassword(false); }}
                 >
                     Register Account
                 </button>
@@ -96,7 +99,7 @@ export default function AuthForm({ apiUrl, onAuthSuccess }: AuthFormProps) {
                     <input
                         type="text"
                         required
-                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-base"
                         placeholder="Case sensitive text sequence"
                         value={username}
                         onChange={(e) => setUsername(e.target.value)}
@@ -107,22 +110,32 @@ export default function AuthForm({ apiUrl, onAuthSuccess }: AuthFormProps) {
                     <label className="block text-xs font-medium text-slate-400 uppercase tracking-wider mb-1.5">
                         Password
                     </label>
-                    <input
-                        type="password"
-                        required
-                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
-                        placeholder="Secure cryptographic sequence"
-                        value={password}
-                        onChange={(e) => setPassword(e.target.value)}
-                    />
+                    <div className="relative">
+                        <input
+                            type={showPassword ? "text" : "password"}
+                            required
+                            className="w-full bg-slate-900 border border-slate-700 rounded-lg pl-3 pr-10 py-2 text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500 text-base"
+                            placeholder="Secure cryptographic sequence"
+                            value={password}
+                            onChange={(e) => setPassword(e.target.value)}
+                        />
+                        <button
+                            type="button"
+                            onClick={() => setShowPassword(!showPassword)}
+                            className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-200 transition-colors"
+                        >
+                            {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        </button>
+                    </div>
                 </div>
 
                 <button
                     type="submit"
                     disabled={loading}
-                    className="w-full mt-2 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-sm py-2.5 px-4 rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-slate-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="w-full mt-2 bg-emerald-600 hover:bg-emerald-500 text-white font-medium text-base py-2.5 px-4 rounded-lg transition-colors focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 focus:ring-offset-slate-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center space-x-2"
                 >
-                    {loading ? "Verifying Credentials..." : isLogin ? "Sign In" : "Create Account"}
+                    <Shield className="h-4 w-4" />
+                    <span>{loading ? "Verifying Credentials..." : isLogin ? "Sign In" : "Create Account"}</span>
                 </button>
             </form>
         </div>

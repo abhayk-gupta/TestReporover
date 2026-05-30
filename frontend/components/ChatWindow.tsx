@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, FormEvent } from "react";
-import { Send, ShieldAlert, Cpu } from "lucide-react";
+import { Send, ShieldAlert, Cpu, Loader2 } from "lucide-react";
 
 interface Message {
     role: "user" | "assistant";
@@ -13,12 +13,12 @@ interface ChatWindowProps {
     userId: string;
     sessionId: string;
     messages: Message[];
-    setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
+    setMessages: (messages: Message[]) => void;
 }
 
 export default function ChatWindow({ apiUrl, userId, sessionId, messages, setMessages }: ChatWindowProps) {
     const [input, setInput] = useState<string>("");
-    const [loading, setLoading] = useState<boolean>(false);
+    const [isProcessing, setIsProcessing] = useState<boolean>(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     const scrollToBottom = () => {
@@ -27,22 +27,23 @@ export default function ChatWindow({ apiUrl, userId, sessionId, messages, setMes
 
     useEffect(() => {
         scrollToBottom();
-    }, [messages, loading]);
+    }, [messages, isProcessing]);
 
     const handleSendMessage = async (e: FormEvent) => {
         e.preventDefault();
-        if (!input.trim() || loading) return;
+        if (!input.trim() || isProcessing) return;
 
         const userQuery = input.trim();
         setInput("");
 
-        // Stage the user's inquiry and provision a target workspace chunk for the streamed response
-        setMessages((prev) => [
-            ...prev,
-            { role: "user", content: userQuery },
-            { role: "assistant", content: "" }
-        ]);
-        setLoading(true);
+        // Build history array with safety checks to prevent text duplication
+        const stagedMessages: Message[] = [
+            ...messages,
+            { role: "user", content: userQuery }
+        ];
+
+        setMessages(stagedMessages);
+        setIsProcessing(true);
 
         try {
             const response = await fetch(`${apiUrl}/chat`, {
@@ -66,110 +67,106 @@ export default function ChatWindow({ apiUrl, userId, sessionId, messages, setMes
             const reader = response.body.getReader();
             const decoder = new TextDecoder("utf-8");
             let done = false;
-
-            // Disable global spinner as token values begin streaming into the UI workspace
-            setLoading(false);
+            let combinedStreamText = "";
+            let isFirstChunk = true;
 
             while (!done) {
                 const { value, done: doneReading } = await reader.read();
                 done = doneReading;
 
-                const chunkValue = decoder.decode(value, { stream: !done });
+                const chunkValue = decoder.decode(value || new Uint8Array(), { stream: !done });
+                if (chunkValue) {
+                    combinedStreamText += chunkValue;
 
-                // Functional state mutation to attach text chunks directly to the current block frame
-                setMessages((prev) => {
-                    const updated = [...prev];
-                    const lastIdx = updated.length - 1;
-                    if (lastIdx >= 0 && updated[lastIdx].role === "assistant") {
-                        updated[lastIdx].content += chunkValue;
+                    if (isFirstChunk) {
+                        // Deactivate loading animation as the first block of text arrives
+                        setIsProcessing(false);
+                        isFirstChunk = false;
                     }
-                    return updated;
-                });
+
+                    // Append the streaming content safely onto the current assistant index
+                    setMessages([...stagedMessages, { role: "assistant", content: combinedStreamText }]);
+                }
             }
         } catch (error: any) {
-            setLoading(false);
-            setMessages((prev) => {
-                const updated = [...prev];
-                const lastIdx = updated.length - 1;
-                if (lastIdx >= 0 && updated[lastIdx].role === "assistant") {
-                    updated[lastIdx].content = `Network Communication Failure: Could not synchronize token blocks. ${error.message || ""}`;
+            setIsProcessing(false);
+            setMessages([
+                ...stagedMessages,
+                {
+                    role: "assistant",
+                    content: `Network Communication Failure: Could not synchronize token blocks. ${error.message || ""}`
                 }
-                return updated;
-            });
+            ]);
         }
     };
 
     return (
         <div className="flex flex-1 flex-col overflow-hidden bg-slate-950">
-            <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                {messages.length === 0 && (
-                    <div className="flex h-full flex-col items-center justify-center text-center max-w-md mx-auto space-y-3">
-                        <div className="p-3 bg-slate-900 border border-slate-800 rounded-2xl text-emerald-400">
-                            <Cpu className="h-6 w-6" />
+            {/* SCROLLABLE CONVERSATION LOGS PANEL */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-6">
+                {messages.length === 0 && !isProcessing && (
+                    <div className="flex h-full flex-col items-center justify-center text-center max-w-lg mx-auto space-y-4">
+                        <div className="p-4 bg-slate-900 border border-slate-800 rounded-2xl text-emerald-400 shadow-xl">
+                            <Cpu className="h-8 w-8" />
                         </div>
-                        <h3 className="text-sm font-medium text-white">Verified Legal Knowledge Namespace Connected</h3>
-                        <p className="text-xs text-slate-400 leading-relaxed">
+                        <h3 className="text-lg font-bold text-white">Verified Legal Knowledge Namespace Connected</h3>
+                        <p className="text-sm text-slate-400 leading-relaxed">
                             State your operational query or case incidents. System evaluation maps responses directly against structured Indian statutory references.
                         </p>
                     </div>
                 )}
 
-                {messages.map((msg, index) => {
-                    // If the assistant message content is still empty and loading state is active, render nothing here
-                    if (msg.role === "assistant" && !msg.content && loading) return null;
-
-                    return (
+                {messages.map((msg, index) => (
+                    <div
+                        key={index}
+                        className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                    >
                         <div
-                            key={index}
-                            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
+                            className={`max-w-3xl rounded-xl px-5 py-3.5 shadow-lg border text-base leading-relaxed ${msg.role === "user"
+                                ? "bg-emerald-600 border-emerald-500 text-white font-medium"
+                                : "bg-slate-900 border-slate-800 text-slate-100"
+                                }`}
                         >
-                            <div
-                                className={`max-w-2xl rounded-xl px-4 py-2.5 text-sm shadow-md border ${msg.role === "user"
-                                    ? "bg-emerald-600 border-emerald-500 text-white"
-                                    : "bg-slate-900 border-slate-800 text-slate-200"
-                                    }`}
-                            >
-                                <p className="whitespace-pre-line leading-relaxed">{msg.content}</p>
-                            </div>
+                            <p className="whitespace-pre-line">{msg.content}</p>
                         </div>
-                    );
-                })}
+                    </div>
+                ))}
 
-                {loading && (
-                    <div className="flex justify-start">
-                        <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-sm text-slate-400 shadow-md flex items-center space-x-2">
-                            <div className="flex space-x-1">
-                                <div className="h-1.5 w-1.5 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: "0ms" }}></div>
-                                <div className="h-1.5 w-1.5 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }}></div>
-                                <div className="h-1.5 w-1.5 bg-slate-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }}></div>
-                            </div>
-                            <span className="text-xs font-mono tracking-wide text-slate-500">Initializing streaming pipeline context channels...</span>
+                {/* PERSISTENT PROCESSING VISUAL STATE */}
+                {isProcessing && (
+                    <div className="flex justify-start animate-fade-in">
+                        <div className="bg-slate-900 border border-slate-800 rounded-xl px-5 py-4 shadow-lg flex items-center space-x-3">
+                            <Loader2 className="h-5 w-5 text-emerald-500 animate-spin" />
+                            <span className="text-sm font-mono tracking-wide text-slate-400">
+                                LegalBuddy is running context grading nodes...
+                            </span>
                         </div>
                     </div>
                 )}
                 <div ref={messagesEndRef} />
             </div>
 
-            <div className="p-4 border-t border-slate-800 bg-slate-900/60">
-                <form onSubmit={handleSendMessage} className="flex items-center space-x-2 max-w-4xl mx-auto">
+            {/* LOWER CONTROL INPUT FOOTER CHANNELS */}
+            <div className="p-4 border-t border-slate-800 bg-slate-900/60 shrink-0">
+                <form onSubmit={handleSendMessage} className="flex items-center space-x-3 max-w-5xl mx-auto">
                     <input
                         type="text"
-                        className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-base text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
                         placeholder="Type your legal query here..."
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
-                        disabled={loading}
+                        disabled={isProcessing}
                     />
                     <button
                         type="submit"
-                        disabled={loading || !input.trim()}
-                        className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white p-2.5 rounded-lg transition-colors focus:outline-none"
+                        disabled={isProcessing || !input.trim()}
+                        className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:hover:bg-emerald-600 text-white p-3 rounded-lg transition-colors focus:outline-none shrink-0"
                     >
-                        <Send className="h-4 w-4" />
+                        <Send className="h-5 w-5" />
                     </button>
                 </form>
-                <div className="flex items-center justify-center space-x-1.5 mt-2.5 text-[10px] text-slate-500">
-                    <ShieldAlert className="h-3 w-3" />
+                <div className="flex items-center justify-center space-x-1.5 mt-3 text-xs text-slate-500">
+                    <ShieldAlert className="h-3.5 w-3.5 text-slate-500" />
                     <span>Context-grounded informational output. Verify independent legal findings before formal execution.</span>
                 </div>
             </div>
