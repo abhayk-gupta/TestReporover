@@ -82,7 +82,7 @@ def sync_populate_cache(optimized_search_string: str, document_chunks: list):
         res = requests.post(f"{base_url}/upsert", headers=headers, json=payload)
         
         if res.status_code == 200:
-            print("   [Async Cache Worker]: ✨ Successfully cached text chunks onto Upstash Vector index.")
+            print("   [Async Cache Worker]: Successfully cached text chunks onto Upstash Vector index.")
         else:
             print(f"   [Async Cache Worker ERROR]: Upstash rejected the upload. Status: {res.status_code} Details: {res.text}")
             
