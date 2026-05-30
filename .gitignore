@@ -1,23 +1,69 @@
-# Python
+# Python Backend
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+.Python
+env/
 venv/
-*.env
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.toast
+.spi
+.hotspot
+.certs/
 
-# Databases
+# Next.js Frontend
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/build/
+frontend/.pnp
+frontend/.pnp.js
+
+# Testing and Coverage
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.history/
+
+# Environment Configurations (Crucial Security)
+*.env
+*.env.local
+*.env.development.local
+*.env.test.local
+*.env.production.local
+.env
+.env.backend
+.env.frontend
+
+# Databases & Vector Stores
 *.db
 *.sqlite3
 db_storage/
+data/processed/*.db
+data/processed/*.sqlite3
 
-# Data & Models
+# Large Data & Model Files (Excludes files over 100MB)
 data/raw/*
 data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
 models/
+weights/
+*.jsonl
+*.csv
+*.parquet
 
-# IDE / OS
-.vscode/
+# IDEs, Editors & OS Systems
+.slate
+.project
 .idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
 .DS_Store
-
-frontend/node_modules/
-frontend/.next/
+Thumbs.db
+desktop.ini
