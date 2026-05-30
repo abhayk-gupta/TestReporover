@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, FormEvent } from "react";
 import { Send, ShieldAlert, Cpu, Loader2 } from "lucide-react";
+import ReactMarkdown from 'react-markdown';
 
 interface Message {
     role: "user" | "assistant";
@@ -70,7 +71,7 @@ export default function ChatWindow({ apiUrl, userId, sessionId, messages, setMes
             let combinedStreamText = "";
             let isFirstChunk = true;
 
-            while (!done) {
+           while (!done) {
                 const { value, done: doneReading } = await reader.read();
                 done = doneReading;
 
@@ -127,7 +128,14 @@ export default function ChatWindow({ apiUrl, userId, sessionId, messages, setMes
                                 : "bg-slate-900 border-slate-800 text-slate-100"
                                 }`}
                         >
-                            <p className="whitespace-pre-line">{msg.content}</p>
+                            {/* Check if user or bot to apply markdown formatting */}
+                                {msg.role === "user" ? (
+                                    <p className="whitespace-pre-line leading-relaxed">{msg.content}</p>
+                                ) : (
+                                    <div className="prose prose-invert prose-emerald max-w-none prose-sm leading-relaxed">
+                                        <ReactMarkdown>{msg.content}</ReactMarkdown>
+                                    </div>
+                                )}
                         </div>
                     </div>
                 ))}

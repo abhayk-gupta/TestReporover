@@ -1,18 +1,19 @@
-import type { Config } from "tailwindcss";
+import type { Config } from 'tailwindcss'
 
 const config: Config = {
-    content: [
+  content: [
         "./app/**/*.{js,ts,jsx,tsx,mdx}",
         "./components/**/*.{js,ts,jsx,tsx,mdx}",
-    ],
-    theme: {
+  ],
+  theme: {
         extend: {
             fontFamily: {
                 sans: ["var(--font-sans)", "system-ui", "sans-serif"],
             },
         },
-    },
-    plugins: [],
-};
-
-export default config;
+  },
+  plugins: [
+    require('@tailwindcss/typography'), 
+  ],
+}
+export default config
