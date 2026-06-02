@@ -1,8 +1,10 @@
 "use client";
 
 import { useState, useRef, useEffect, FormEvent } from "react";
-import { Send, ShieldAlert, Cpu, Loader2 } from "lucide-react";
+import { Send, ShieldAlert, Cpu, Loader2, Copy, Check } from "lucide-react";
 import ReactMarkdown from 'react-markdown';
+import { motion, AnimatePresence } from "framer-motion";
+import { toast } from "sonner";
 
 interface Message {
     role: "user" | "assistant";
@@ -21,6 +23,7 @@ export default function ChatWindow({ apiUrl, userId, sessionId, messages, setMes
     const [input, setInput] = useState<string>("");
     const [isProcessing, setIsProcessing] = useState<boolean>(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -37,7 +40,6 @@ export default function ChatWindow({ apiUrl, userId, sessionId, messages, setMes
         const userQuery = input.trim();
         setInput("");
 
-        // Build history array with safety checks to prevent text duplication
         const stagedMessages: Message[] = [
             ...messages,
             { role: "user", content: userQuery }
@@ -57,13 +59,8 @@ export default function ChatWindow({ apiUrl, userId, sessionId, messages, setMes
                 }),
             });
 
-            if (!response.ok) {
-                throw new Error(`Inference Engine Exception: Status Code ${response.status}`);
-            }
-
-            if (!response.body) {
-                throw new Error("ReadableStream interface unavailable on target response payload.");
-            }
+            if (!response.ok) throw new Error(`Status: ${response.status}`);
+            if (!response.body) throw new Error("No response stream");
 
             const reader = response.body.getReader();
             const decoder = new TextDecoder("utf-8");
@@ -71,96 +68,84 @@ export default function ChatWindow({ apiUrl, userId, sessionId, messages, setMes
             let combinedStreamText = "";
             let isFirstChunk = true;
 
-           while (!done) {
+            while (!done) {
                 const { value, done: doneReading } = await reader.read();
                 done = doneReading;
-
                 const chunkValue = decoder.decode(value || new Uint8Array(), { stream: !done });
+                
                 if (chunkValue) {
                     combinedStreamText += chunkValue;
-
-                    if (isFirstChunk) {
-                        // Deactivate loading animation as the first block of text arrives
-                        setIsProcessing(false);
-                        isFirstChunk = false;
-                    }
-
-                    // Append the streaming content safely onto the current assistant index
+                    if (isFirstChunk) { setIsProcessing(false); isFirstChunk = false; }
                     setMessages([...stagedMessages, { role: "assistant", content: combinedStreamText }]);
                 }
             }
         } catch (error: any) {
             setIsProcessing(false);
-            setMessages([
-                ...stagedMessages,
-                {
-                    role: "assistant",
-                    content: `Network Communication Failure: Could not synchronize token blocks. ${error.message || ""}`
-                }
-            ]);
+            toast.error("Failed to connect to the legal assistant.");
         }
+    };
+
+    const copyToClipboard = (text: string, index: number) => {
+        navigator.clipboard.writeText(text);
+        setCopiedIndex(index);
+        setTimeout(() => setCopiedIndex(null), 2000);
     };
 
     return (
         <div className="flex flex-1 flex-col overflow-hidden bg-slate-950">
-            {/* SCROLLABLE CONVERSATION LOGS PANEL */}
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
                 {messages.length === 0 && !isProcessing && (
                     <div className="flex h-full flex-col items-center justify-center text-center max-w-lg mx-auto space-y-4">
-                        <div className="p-4 bg-slate-900 border border-slate-800 rounded-2xl text-emerald-400 shadow-xl">
+                        <div className="p-4 bg-slate-900 border border-slate-800 rounded-2xl text-emerald-400">
                             <Cpu className="h-8 w-8" />
                         </div>
-                        <h3 className="text-lg font-bold text-white">Verified Legal Knowledge Namespace Connected</h3>
-                        <p className="text-sm text-slate-400 leading-relaxed">
-                            State your operational query or case incidents. System evaluation maps responses directly against structured Indian statutory references.
-                        </p>
+                        <h3 className="text-lg font-bold text-white">LegalBuddy AI</h3>
+                        <p className="text-sm text-slate-400">State your query to begin context-grounded legal analysis.</p>
                     </div>
                 )}
 
-                {messages.map((msg, index) => (
-                    <div
-                        key={index}
-                        className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-                    >
-                        <div
-                            className={`max-w-3xl rounded-xl px-5 py-3.5 shadow-lg border text-base leading-relaxed ${msg.role === "user"
-                                ? "bg-emerald-600 border-emerald-500 text-white font-medium"
-                                : "bg-slate-900 border-slate-800 text-slate-100"
-                                }`}
+                <AnimatePresence>
+                    {messages.map((msg, index) => (
+                        <motion.div
+                            key={index}
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                         >
-                            {/* Check if user or bot to apply markdown formatting */}
-                                {msg.role === "user" ? (
-                                    <p className="whitespace-pre-line leading-relaxed">{msg.content}</p>
-                                ) : (
-                                    <div className="prose prose-invert prose-emerald max-w-none prose-sm leading-relaxed">
-                                        <ReactMarkdown>{msg.content}</ReactMarkdown>
-                                    </div>
+                            <div className={`max-w-3xl rounded-2xl px-5 py-3.5 border ${msg.role === "user" ? "bg-emerald-600 border-emerald-500 text-white" : "bg-slate-900 border-slate-800 text-slate-100"}`}>
+                                <div className="prose prose-invert prose-emerald prose-sm max-w-none">
+                                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                                </div>
+                                {msg.role === "assistant" && (
+                                    <button 
+                                        onClick={() => copyToClipboard(msg.content, index)}
+                                        className="mt-3 text-slate-500 hover:text-white transition-colors"
+                                    >
+                                        {copiedIndex === index ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
+                                    </button>
                                 )}
-                        </div>
-                    </div>
-                ))}
+                            </div>
+                        </motion.div>
+                    ))}
+                </AnimatePresence>
 
-                {/* PERSISTENT PROCESSING VISUAL STATE */}
                 {isProcessing && (
-                    <div className="flex justify-start animate-fade-in">
-                        <div className="bg-slate-900 border border-slate-800 rounded-xl px-5 py-4 shadow-lg flex items-center space-x-3">
+                    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex justify-start">
+                        <div className="bg-slate-900 border border-slate-800 rounded-2xl px-5 py-4 flex items-center space-x-3">
                             <Loader2 className="h-5 w-5 text-emerald-500 animate-spin" />
-                            <span className="text-sm font-mono tracking-wide text-slate-400">
-                                LegalBuddy is running context grading nodes...
-                            </span>
+                            <span className="text-sm text-slate-400">Processing context...</span>
                         </div>
-                    </div>
+                    </motion.div>
                 )}
                 <div ref={messagesEndRef} />
             </div>
 
-            {/* LOWER CONTROL INPUT FOOTER CHANNELS */}
-            <div className="p-4 border-t border-slate-800 bg-slate-900/60 shrink-0">
+            <div className="p-4 border-t border-slate-800 bg-slate-900/60">
                 <form onSubmit={handleSendMessage} className="flex items-center space-x-3 max-w-5xl mx-auto">
                     <input
                         type="text"
-                        className="flex-1 bg-slate-950 border border-slate-700 rounded-lg px-4 py-3 text-base text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
-                        placeholder="Type your legal query here..."
+                        className="flex-1 bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        placeholder="State your legal question..."
                         value={input}
                         onChange={(e) => setInput(e.target.value)}
                         disabled={isProcessing}
@@ -168,16 +153,13 @@ export default function ChatWindow({ apiUrl, userId, sessionId, messages, setMes
                     <button
                         type="submit"
                         disabled={isProcessing || !input.trim()}
-                        className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 disabled:hover:bg-emerald-600 text-white p-3 rounded-lg transition-colors focus:outline-none shrink-0"
+                        className="bg-emerald-600 hover:bg-emerald-500 disabled:opacity-40 text-white p-3 rounded-xl transition-all"
                     >
                         <Send className="h-5 w-5" />
                     </button>
                 </form>
-                <div className="flex items-center justify-center space-x-1.5 mt-3 text-xs text-slate-500">
-                    <ShieldAlert className="h-3.5 w-3.5 text-slate-500" />
-                    <span>Context-grounded informational output. Verify independent legal findings before formal execution.</span>
-                </div>
             </div>
         </div>
     );
 }
+
