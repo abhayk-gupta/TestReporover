@@ -325,7 +325,7 @@ def edge_intent(state: GraphState):
     return state["intent"]
 
 def edge_cache_evaluation(state: GraphState):
-    return "grade_documents" if state["cache_hit"] else "retrieve"
+    return "generate" if state["cache_hit"] else "retrieve"
 
 def edge_relevance_evaluation(state: GraphState):
     return "web_search" if state["relevance"] == "no" else "generate"
@@ -370,8 +370,8 @@ workflow.add_conditional_edges(
     "check_semantic_cache",
     edge_cache_evaluation,
     {
-        "grade_documents": "grade_documents",
-        "retrieve": "retrieve"
+        "generate": "generate",  
+        "retrieve": "retrieve"   
     }
 )
 workflow.add_edge("retrieve", "grade_documents")
