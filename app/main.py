@@ -54,10 +54,12 @@ class ChatQuery(BaseModel):
     session_id: str = "default_session"
 
 def sync_populate_cache(optimized_search_string: str, document_chunks: list):
+    """Synchronously logs vector definitions to Upstash (Runs in a background thread)."""
     upstash_url = os.getenv("UPSTASH_VECTOR_REST_URL")
     upstash_token = os.getenv("UPSTASH_VECTOR_REST_TOKEN")
 
     if not upstash_url or not upstash_token or not document_chunks:
+        print("   [Cache Worker Error]: Missing Upstash Credentials or Documents.")
         return
 
     try:
@@ -76,7 +78,14 @@ def sync_populate_cache(optimized_search_string: str, document_chunks: list):
             "vector": query_vector,
             "metadata": {"documents": packaged_payload}
         }
-        requests.post(f"{base_url}/upsert", headers=headers, json=payload)
+
+        res = requests.post(f"{base_url}/upsert", headers=headers, json=payload)
+        
+        if res.status_code == 200:
+            print("   [Async Cache Worker]: Successfully cached text chunks onto Upstash Vector index.")
+        else:
+            print(f"   [Async Cache Worker ERROR]: Upstash rejected the upload. Status: {res.status_code} Details: {res.text}")
+            
     except Exception as e:
         print(f"Background cache ingestion encountered an error: {e}")
 
